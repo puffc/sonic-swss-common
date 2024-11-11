@@ -30,12 +30,12 @@ resources:
   repositories:
   - repository: sonic-sairedis
     type: github
-    name: sonic-net/sonic-sairedis
-    endpoint: sonic-net
+    name: puffc/sonic-sairedis
+    endpoint: puffc
   - repository: sonic-swss
     type: github
-    name: sonic-net/sonic-swss
-    endpoint: sonic-net
+    name: puffc/sonic-swss
+    endpoint: puffc
 
 parameters:
   - name: debian_version
@@ -54,8 +54,7 @@ stages:
   jobs:
   - job:
     displayName: "amd64/ubuntu-20.04"
-    pool:
-      vmImage: 'ubuntu-20.04'
+    pool: mypool
 
     steps:
     - script: |
@@ -97,55 +96,14 @@ stages:
       archive_gcov: true
       debian_version: ${{ parameters.debian_version }}
 
-- stage: BuildArm
-  dependsOn: Build
-  condition: succeeded('Build')
-  jobs:
-  - template: .azure-pipelines/build-template.yml
-    parameters:
-      arch: armhf
-      timeout: 180
-      pool: sonicbld-armhf
-      sonic_slave: sonic-slave-${{ parameters.debian_version }}-armhf:$(BUILD_BRANCH)
-      artifact_name: sonic-swss-common.armhf
-      debian_version: ${{ parameters.debian_version }}
-
-  - template: .azure-pipelines/build-template.yml
-    parameters:
-      arch: arm64
-      timeout: 180
-      pool: sonicbld-arm64
-      sonic_slave: sonic-slave-${{ parameters.debian_version }}-arm64:$(BUILD_BRANCH)
-      artifact_name: sonic-swss-common.arm64
-      debian_version: ${{ parameters.debian_version }}
 
 - stage: BuildBookworm
-  dependsOn: BuildArm
-  condition: succeeded('BuildArm')
   jobs:
   - template: .azure-pipelines/build-template.yml
     parameters:
       arch: amd64
       sonic_slave: sonic-slave-bookworm:$(BUILD_BRANCH)
       artifact_name: sonic-swss-common-bookworm
-      debian_version: ${{ parameters.debian_version }}
-
-  - template: .azure-pipelines/build-template.yml
-    parameters:
-      arch: armhf
-      timeout: 180
-      pool: sonicbld-armhf
-      sonic_slave: sonic-slave-bookworm-armhf:$(BUILD_BRANCH)
-      artifact_name: sonic-swss-common-bookworm.armhf
-      debian_version: ${{ parameters.debian_version }}
-
-  - template: .azure-pipelines/build-template.yml
-    parameters:
-      arch: arm64
-      timeout: 180
-      pool: sonicbld-arm64
-      sonic_slave: sonic-slave-bookworm-arm64:$(BUILD_BRANCH)
-      artifact_name: sonic-swss-common-bookworm.arm64
       debian_version: ${{ parameters.debian_version }}
 
 - stage: BuildSairedis
