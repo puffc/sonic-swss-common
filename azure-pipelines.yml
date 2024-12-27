@@ -11,7 +11,7 @@ stages:
   jobs:
   - job:
     container:
-      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bookworm:latest
+      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bullseye:latest
     steps:
     - checkout: self
       clean: true
@@ -37,8 +37,8 @@ stages:
         allowPartiallySucceededBuilds: true
         path: $(Build.ArtifactStagingDirectory)/download
         itemPattern: |
-          target/debs/bookworm/libyang-*.deb
-          target/debs/bookworm/libyang_*.deb
+          target/debs/bullseye/libyang-*.deb
+          target/debs/bullseye/libyang_*.deb
       displayName: "Download libyang packages"
     - script: |
         set -ex
@@ -79,7 +79,7 @@ stages:
         rm -rf $(Build.ArtifactStagingDirectory)/download
       displayName: "Run swss common unit tests"
     - publish: $(System.DefaultWorkingDirectory)/
-      artifact: sonic-swss-common-bookworm
+      artifact: sonic-swss-common-bullseye
       displayName: "Archive swss common debian packages"
     - publish: $(Build.ArtifactStagingDirectory)/
       artifact: sonic-swss-pytests
