@@ -15,8 +15,10 @@ stages:
     steps:
     - checkout: self
       clean: true
-      submodules: true
     - script: |
+      set -ex
+      sudo apt-get update 
+      sudo apt-get install -qq -y \
         libhiredis-dev \
         libnl-3-dev \
         libnl-genl-3-dev \
