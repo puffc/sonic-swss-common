@@ -1,201 +1,97 @@
-# C/C++ with GCC
-# Build your C/C++ project with GCC using make.
-# Add steps that publish test results, save build artifacts, deploy, and more:
-# https://docs.microsoft.com/azure/devops/pipelines/apps/c-cpp/gcc
-pr:
-- master
-- 202???
-- 201???
-
 trigger:
   batch: true
   branches:
     include:
-    - master
-    - 202???
-    - 201???
+    - puff_master
 
-# this part need to be set in UI
-schedules:
-- cron: "0 0 * * 6"
-  displayName: Weekly build
-  branches:
-    include:
-    - master
-    - 202???
-    - 201???
-  always: true
-
-resources:
-  repositories:
-  - repository: sonic-sairedis
-    type: github
-    name: sonic-net/sonic-sairedis
-    endpoint: sonic-net
-  - repository: sonic-swss
-    type: github
-    name: sonic-net/sonic-swss
-    endpoint: sonic-net
-
-parameters:
-  - name: debian_version
-    type: string
-    default: bookworm
-variables:
-  - name: BUILD_BRANCH
-    ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
-      value: $(System.PullRequest.TargetBranch)
-    ${{ else }}:
-      value: $(Build.SourceBranchName)
+pool: mypool
 
 stages:
 - stage: Build
-
   jobs:
   - job:
-    displayName: "amd64/ubuntu-20.04"
-    pool:
-      vmImage: 'ubuntu-20.04'
-
+    container:
+      image: sonicdev-microsoft.azurecr.io:443/sonic-slave-bookworm:latest
     steps:
+    - checkout: self
+      clean: true
+      submodules: true
     - script: |
-        sudo apt-get update
-        sudo apt-get install -y make libtool m4 autoconf dh-exec debhelper cmake pkg-config nlohmann-json3-dev \
-                         libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-route-3-dev libnl-nf-3-dev swig3.0 \
-                         libpython2.7-dev libboost-dev libboost-serialization-dev uuid-dev libzmq3-dev
-        sudo apt-get install -y sudo
-        sudo apt-get install -y redis-server redis-tools
-        sudo apt-get install -y python3-pip
-        sudo pip3 install pytest
-        sudo apt-get install -y python
-        sudo apt-get install cmake libgtest-dev libgmock-dev libyang-dev
-        cd /usr/src/gtest && sudo cmake . && sudo make
-        ARCH=$(dpkg --print-architecture)
-        set -x
-        sudo curl -fsSL -o /usr/local/bin/bazel \
-            https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${ARCH}
-        sudo chmod 755 /usr/local/bin/bazel
-      displayName: "Install dependencies"
+        libhiredis-dev \
+        libnl-3-dev \
+        libnl-genl-3-dev \
+        libnl-route-3-dev \
+        libnl-nf-3-dev \
+        swig
+      displayName: "Install dependencies"  
+    - task: DownloadPipelineArtifact@2
+      inputs:
+        source: specific
+        project: build
+        pipeline: puffc.sonic-buildimage
+        artifact: sonic-buildimage.vs1
+        buildVersionToDownload: latest
+        allowFailedBuilds: true
+        allowPartiallySucceededBuilds: true
+        path: $(Build.ArtifactStagingDirectory)/download
+        itemPattern: |
+          target/debs/bookworm/libyang-*.deb
+          target/debs/bookworm/libyang_*.deb
+      displayName: "Download libyang packages"
     - script: |
+        set -ex
+        sudo dpkg -i $(find ./download -name *.deb)
+      workingDirectory: $(Build.ArtifactStagingDirectory)
+      displayName: "Install libyang from common lib"
+    - script: |
+        set -ex
+        rm ../*.deb || true
         ./autogen.sh
-        dpkg-buildpackage -rfakeroot -us -uc -b -j$(nproc) && cp ../*.deb .
-      displayName: "Compile sonic swss common"
+        fakeroot debian/rules DEB_CONFIGURE_EXTRA_FLAGS='--enable-code-coverage' DEB_BUILD_PROFILES=nopython2 CFLAGS="" CXXFLAGS="--coverage -fprofile-abs-path" LDFLAGS="--coverage -fprofile-abs-path" binary
+        mv ../*.deb .
+      displayName: "Compile sonic swss common with coverage enabled"      
     - script: |
-        bazel build //...
-        bazel test //...
-      displayName: "Compile and test all Bazel targets"
+        set -ex
+        sudo pip install Pympler==0.8 pytest
+        sudo apt-get install -y redis-server
+        sudo sed -i 's/notify-keyspace-events ""/notify-keyspace-events AKE/' /etc/redis/redis.conf
+        sudo sed -ri 's/^# unixsocket/unixsocket/' /etc/redis/redis.conf
+        sudo sed -ri 's/^unixsocketperm .../unixsocketperm 777/' /etc/redis/redis.conf
+        sudo sed -ri 's/redis-server.sock/redis.sock/' /etc/redis/redis.conf
+        sudo service redis-server restart
+        sudo mkdir /usr/local/yang-models
+
+        sudo dpkg -i libswsscommon_*.deb
+        sudo dpkg -i libswsscommon-dev_*.deb
+        sudo dpkg -i python3-swsscommon_*.deb
+
+        ./tests/tests
+        redis-cli FLUSHALL
+        pytest-3 --cov=. --cov-report=xml
+        [ -f coverage.xml ] && mv coverage.xml tests/coverage.xml
+        gcovr -r ./ -e ".*/swsscommon_wrap.cpp" -e=tests --exclude-unreachable-branches --exclude-throw-branches --gcov-ignore-parse-errors -x --xml-pretty  -o coverage.xml
+        make -C goext
+        redis-cli FLUSHALL
+        make -C goext check
+
+        rm -rf $(Build.ArtifactStagingDirectory)/download
+      displayName: "Run swss common unit tests"
     - publish: $(System.DefaultWorkingDirectory)/
-      artifact: sonic-swss-common.amd64.ubuntu20_04
+      artifact: sonic-swss-common-bookworm
       displayName: "Archive swss common debian packages"
-
-  - job:
-    displayName: "amd64/ubuntu-22.04"
-    pool:
-      vmImage: 'ubuntu-22.04'
-
-    steps:
+    - publish: $(Build.ArtifactStagingDirectory)/
+      artifact: sonic-swss-pytests
+      displayName: "Archive swss pytests"
     - script: |
+        set -ex
+        # Install .NET CORE
+        curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+        sudo apt-add-repository https://packages.microsoft.com/debian/12/prod
         sudo apt-get update
-        sudo apt-get install -y make libtool m4 autoconf dh-exec debhelper cmake pkg-config nlohmann-json3-dev \
-                         libhiredis-dev libnl-3-dev libnl-genl-3-dev libnl-route-3-dev libnl-nf-3-dev swig4.0 \
-                         libpython3-dev libboost-dev libboost-serialization-dev uuid-dev libzmq3-dev
-        sudo apt-get install -y sudo
-        sudo apt-get install -y redis-server redis-tools
-        sudo apt-get install -y python3-pip
-        sudo pip3 install pytest
-        sudo apt-get install -y python
-        sudo apt-get install cmake libgtest-dev libgmock-dev libyang-dev
-        cd /usr/src/gtest && sudo cmake . && sudo make
-        ARCH=$(dpkg --print-architecture)
-        set -x
-        sudo curl -fsSL -o /usr/local/bin/bazel \
-            https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-${ARCH}
-        sudo chmod 755 /usr/local/bin/bazel
-      displayName: "Install dependencies"
-    - script: |
-        ./autogen.sh
-        dpkg-buildpackage -rfakeroot -us -uc -Pnopython2 -b -j$(nproc) && cp ../*.deb .
-      displayName: "Compile sonic swss common"
-    - script: |
-        bazel build //...
-        bazel test //...
-      displayName: "Compile and test all Bazel targets"
-    - publish: $(System.DefaultWorkingDirectory)/
-      artifact: sonic-swss-common.amd64.ubuntu22_04
-      displayName: "Archive swss common debian packages"
-
-  - template: .azure-pipelines/build-template.yml
-    parameters:
-      arch: amd64
-      sonic_slave: sonic-slave-${{ parameters.debian_version }}:$(BUILD_BRANCH)
-      artifact_name: sonic-swss-common-${{ parameters.debian_version }}
-      run_unit_test: true
-      archive_gcov: true
-      debian_version: ${{ parameters.debian_version }}
-
-- stage: BuildArm
-  dependsOn: Build
-  condition: succeeded('Build')
-  jobs:
-  - template: .azure-pipelines/build-template.yml
-    parameters:
-      arch: armhf
-      timeout: 180
-      pool: sonicbld-armhf
-      sonic_slave: sonic-slave-${{ parameters.debian_version }}-armhf:$(BUILD_BRANCH)
-      artifact_name: sonic-swss-common-${{ parameters.debian_version }}.armhf
-      debian_version: ${{ parameters.debian_version }}
-
-  - template: .azure-pipelines/build-template.yml
-    parameters:
-      arch: arm64
-      timeout: 180
-      pool: sonicbld-arm64
-      sonic_slave: sonic-slave-${{ parameters.debian_version }}-arm64:$(BUILD_BRANCH)
-      artifact_name: sonic-swss-common-${{ parameters.debian_version }}.arm64
-      debian_version: ${{ parameters.debian_version }}
-
-- stage: BuildSairedis
-  dependsOn: Build
-  condition: succeeded('Build')
-  jobs:
-  - template: .azure-pipelines/build-sairedis-template.yml
-    parameters:
-      arch: amd64
-      sonic_slave: sonic-slave-${{ parameters.debian_version }}:$(BUILD_BRANCH)
-      swss_common_artifact_name: sonic-swss-common-${{ parameters.debian_version }}
-      artifact_name: sonic-sairedis-${{ parameters.debian_version }}
-      syslog_artifact_name: sonic-sairedis.syslog
-      debian_version: ${{ parameters.debian_version }}
-
-- stage: BuildSwss
-  dependsOn: BuildSairedis
-  condition: succeeded('BuildSairedis')
-  jobs:
-  - template: .azure-pipelines/build-swss-template.yml
-    parameters:
-      arch: amd64
-      sonic_slave: sonic-slave-${{ parameters.debian_version }}:$(BUILD_BRANCH)
-      swss_common_artifact_name: sonic-swss-common-${{ parameters.debian_version }}
-      sairedis_artifact_name: sonic-sairedis-${{ parameters.debian_version }}
-      artifact_name: sonic-swss-${{ parameters.debian_version }}
-      debian_version: ${{ parameters.debian_version }}
-
-- stage: BuildDocker
-  dependsOn: BuildSwss
-  condition: succeeded('BuildSwss')
-  jobs:
-  - template: .azure-pipelines/build-docker-sonic-vs-template.yml
-    parameters:
-      swss_common_artifact_name: sonic-swss-common-${{ parameters.debian_version }}
-      sairedis_artifact_name: sonic-sairedis-${{ parameters.debian_version }}
-      swss_artifact_name: sonic-swss-${{ parameters.debian_version }}
-      artifact_name: docker-sonic-vs
-
-- stage: Test
-  dependsOn: BuildDocker
-  condition: succeeded('BuildDocker')
-  jobs:
-  - template: .azure-pipelines/test-docker-sonic-vs-template.yml
-    parameters:
-      log_artifact_name: log
+        sudo apt-get install -y dotnet-sdk-8.0
+      displayName: "Install .NET CORE"
+    - task: PublishCodeCoverageResults@1
+      inputs:
+        codeCoverageTool: Cobertura
+        summaryFileLocation: '$(System.DefaultWorkingDirectory)/coverage.xml'
+      displayName: 'Publish test coverage'
