@@ -31,7 +31,7 @@ stages:
         source: specific
         project: build
         pipeline: puffc.sonic-buildimage
-        artifact: sonic-buildimage.vs1
+        artifact: sonic-buildimage.vs
         buildVersionToDownload: latest
         allowFailedBuilds: true
         allowPartiallySucceededBuilds: true
